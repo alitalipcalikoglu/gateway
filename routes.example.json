@@ -1,0 +1,53 @@
+{
+  "jwt": {
+    "jwksUrl": "http://10.0.0.2:3002/.well-known/jwks.json",
+    "issuer": "https://api.example.com",
+    "audience": "shop"
+  },
+  "routes": [
+    {
+      "id": "auth-public",
+      "pathPrefix": "/api/auth/",
+      "stripPrefix": "/api/auth",
+      "upstreams": ["http://10.0.0.2:3002"],
+      "methods": ["POST", "OPTIONS"],
+      "injectApiKey": "AUTH_API_KEY",
+      "cors": ["https://shop.example.com"],
+      "rateLimit": 60,
+      "bodyLimit": 16384
+    },
+    {
+      "id": "media-user",
+      "pathPrefix": "/api/media/",
+      "stripPrefix": "/api/media",
+      "upstreams": ["http://10.0.0.3:3003"],
+      "auth": "user",
+      "injectApiKey": "MEDIA_API_KEY",
+      "cors": ["https://shop.example.com"],
+      "bodyLimit": 26214400,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "media-files",
+      "pathPrefix": "/files/",
+      "upstreams": ["http://10.0.0.3:3003"],
+      "methods": ["GET", "HEAD", "OPTIONS"],
+      "cors": ["*"],
+      "rateLimit": 1200,
+      "timeoutMs": 120000
+    },
+    {
+      "id": "jwks",
+      "pathPrefix": "/.well-known/jwks.json",
+      "upstreams": ["http://10.0.0.2:3002"],
+      "methods": ["GET", "HEAD"]
+    },
+    {
+      "id": "web",
+      "host": "shop.example.com",
+      "pathPrefix": "/",
+      "upstreams": ["http://10.0.0.10:8080", "http://10.0.0.11:8080"],
+      "healthPath": "/healthz"
+    }
+  ]
+}
