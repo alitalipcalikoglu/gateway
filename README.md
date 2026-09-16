@@ -92,6 +92,10 @@ These three paths are reserved and never forwarded.
 - Point the auth service's `JWT_ISSUER` at the gateway's public URL and expose `/.well-known/jwks.json` through a route (see the example), so any consumer can verify tokens.
 - WebSockets and HTTP/2 to upstreams are not proxied; upstream connections are HTTP/1.1 keep-alive.
 
+## Examples
+
+Scenario walkthroughs for every feature live in [examples/](examples/README.md).
+
 ## Configuration
 
 See [.env.example](.env.example). Nothing is required except the environment variables named by `injectApiKey` entries in your routes. `METRICS_TOKEN` enables `/metrics`.
