@@ -1,0 +1,28 @@
+{
+  "name": "@atc-web/gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Edge gateway: routes public traffic to internal services with JWT verification, API-key injection, rate limiting, CORS, security headers and streaming proxying",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alitalipcalikoglu/gateway.git"
+  },
+  "type": "module",
+  "main": "src/index.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch --env-file=.env src/index.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "typecheck": "tsc -p jsconfig.json"
+  },
+  "dependencies": {
+    "fastify": "5.12.4",
+    "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.3",
+    "typescript": "7.0.2"
+  }
+}
