@@ -42,6 +42,14 @@ npm test
 npm run typecheck
 ```
 
+## Boundaries
+
+**Purpose:** the single public entry point that routes, authenticates, rate-limits and observes traffic to every other service.
+
+**Responsibilities:** route matching (`routes.json`); JWT verification; rate-limit policy enforcement (delegated to `ratelimit`); geo header injection (delegated to `geo`); CORS; trace propagation; per-upstream health tracking and cooldown.
+
+**Non-responsibilities:** gateway ≠ business logic — it forwards requests and headers, it does not implement or validate domain rules, and it owns no state of its own for rate limits or geolocation (both delegated to their owning service). One narrow exception worth naming: it does read the `email`/`email_verified` claims out of a verified JWT by name to set `x-user-email`/`x-user-email-verified` headers, a small, deliberate coupling to auth's token shape rather than a fully opaque claims pass-through. It does not retry or queue failed requests — that's each upstream's own concern.
+
 ## Routes
 
 `routes.json` is validated at startup; a bad file stops the process with the exact problem. The longest `pathPrefix` wins; a route with `host` beats one without for the same prefix.

@@ -16,13 +16,20 @@ import { UpstreamPool } from '../upstream-pool.js';
 /** @typedef {import('fastify').FastifyRequest} FastifyRequest */
 /** @typedef {import('fastify').FastifyReply} FastifyReply */
 
+// Stage 7: gateway is the one service with no @atc-web/service-core dependency (a deliberate,
+// long-standing choice — see service-core's own test/exports.test.js comment on why a `context`
+// subpath was removed rather than ever adopted here). So /v1/info's `version` is read the same
+// way service-core's own `readServiceVersion` would, just inlined; `serviceCore` is `null` since
+// there genuinely is no such dependency to report a version for.
+const GATEWAY_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+
 /**
  * The edge: matches a route, enforces rate limit, CORS, method and authentication, then hands
- * the exchange to {@link Proxy}. Own endpoints: /health, /ready, /metrics.
+ * the exchange to {@link Proxy}. Own endpoints: /health, /ready, /metrics, /v1/info.
  */
 export class GatewayApi {
   static READY_CACHE_MS = 15_000;
-  static RESERVED = new Set(['/health', '/ready', '/metrics']);
+  static RESERVED = new Set(['/health', '/ready', '/metrics', '/v1/info']);
 
   /**
    * @param {object} deps
@@ -80,6 +87,14 @@ export class GatewayApi {
       const ready = await this.#readiness();
       return reply.code(ready.ok ? 200 : 503).send({ status: ready.ok ? 'ok' : 'unavailable', upstreams: ready.detail });
     });
+    app.get('/v1/info', { logLevel: 'warn' }, async () => ({
+      service: 'gateway',
+      version: GATEWAY_VERSION,
+      apiVersion: 'v1',
+      capabilities: ['jwt-auth', 'rate-limit-policy', 'upstream-health-tracking', 'geo-headers', 'cors', 'trace-propagation'],
+      schemaVersion: null,
+      serviceCore: null,
+    }));
     app.get('/metrics', async (request, reply) => {
       if (!config.metricsToken) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'metrics disabled' } });
       const given = (request.headers.authorization ?? '').replace(/^Bearer\s+/i, '');

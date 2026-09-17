@@ -218,3 +218,16 @@ test('/ready reports upstream health per route; /metrics needs the token and exp
   assert.equal((await off.inject({ url: '/metrics', headers: { authorization: 'Bearer x' } })).statusCode, 404, 'disabled without METRICS_TOKEN');
   await off.close();
 });
+
+test('/v1/info reports identity, capabilities and null schemaVersion/serviceCore (gateway has no DB, no service-core dependency)', async () => {
+  const res = await app.inject('/v1/info');
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), {
+    service: 'gateway',
+    version: '1.0.0',
+    apiVersion: 'v1',
+    capabilities: ['jwt-auth', 'rate-limit-policy', 'upstream-health-tracking', 'geo-headers', 'cors', 'trace-propagation'],
+    schemaVersion: null,
+    serviceCore: null,
+  });
+});
