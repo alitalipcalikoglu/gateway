@@ -179,6 +179,29 @@ every upstream on a route is `open`, the pool still returns one deterministicall
 order) rather than manufacture a `503` — the pre-existing "no deadlock" guarantee — without that
 ride-along attempt ever claiming a second concurrent probe on the same upstream.
 
+**Attempt ownership (Stage 9.1)**: `UpstreamPool#next()` returns not just an `Upstream` but an
+`Attempt` descriptor — `{ kind: 'ordinary' }`, `{ kind: 'probe', generation }` or
+`{ kind: 'ride-along' }` — and `fail()`/`succeed()` require it. This closes a real race the
+original Stage 9 design missed: with only `Upstream` (no attempt kind) passed back to
+`fail`/`succeed`, a Pass-3 "try anyway" ride-along sent alongside a pending half-open probe could
+itself resolve that probe's episode — e.g. the ride-along succeeding first would close the breaker
+out from under a probe that was still in flight and about to fail, corrupting the single-probe
+contract. Only an `ordinary` attempt (always authoritative — the same simple counting as before
+there was any breaker at all) or the `probe` attempt whose `generation` still matches the
+upstream's *current* half-open episode may actually mutate `state`/`failures`/`downUntil`; a
+`ride-along` is unconditionally a no-op for breaker purposes, and a `probe` whose generation has
+since moved on (the episode it belonged to already resolved and a new one started) is fenced out
+just as completely — both still run as real requests and still feed ordinary latency/error
+telemetry, they just carry no authority over the breaker. See `test/breaker.test.js`'s "Stage 9.1"
+tests for the deterministic reproduction (a ride-along resolving before its concurrent designated
+probe, in both directions) and the fix's own tests (multiple ride-alongs, a stale probe generation).
+One accepted, narrow residual: an `ordinary` attempt is unconditionally authoritative even if, by
+the time it resolves, concurrent activity has since pushed that same upstream into a *later*
+half-open episode — an extremely rare interleaving (it requires the ordinary attempt's own request
+to still be in flight after enough sibling failures reached the threshold, the full cooldown
+elapsed, and a fresh probe was already dispatched), and even then the worst case is one extra,
+harmless open+cooldown cycle — never a corrupted or stuck state.
+
 **Live reload** (`Application#reload`, wired to `SIGHUP`): re-reads and validates `routes.json`
 (the exact same checks as startup, including the new `failOpen`-required rule and the
 policy/geo-integration cross-check) and builds an entirely new `RouteTable` + set of `UpstreamPool`s

@@ -115,8 +115,9 @@ export class Proxy {
     const tried = [];
     const upstreamStarted = process.hrtime.bigint();
     for (;;) {
-      const upstream = pool.next({ exclude: tried, onTransition });
-      if (!upstream) throw new ProxyError(503, 'NO_UPSTREAM', 'no upstream available');
+      const picked = pool.next({ exclude: tried, onTransition });
+      if (!picked) throw new ProxyError(503, 'NO_UPSTREAM', 'no upstream available');
+      const { upstream, attempt } = picked;
       tried.push(upstream);
       try {
         const result = await this.#attempt(request, reply, route, upstream, path, extraHeaders, { hasBody, bodyLimit, timeoutMs });
@@ -124,19 +125,22 @@ export class Proxy {
         // Stage 9: a response IS an answer, but a 5xx is still evidence the upstream is unhealthy —
         // unlike a connect failure/timeout it never throws, so it has to be classified here instead
         // of in the catch branch below. Anything else (2xx/3xx/4xx) is a normal, healthy exchange —
-        // a client 4xx is never held against the upstream.
+        // a client 4xx is never held against the upstream. Stage 9.1: `pool.fail`/`succeed` decide
+        // for themselves whether `attempt` actually has authority to move the breaker — a
+        // ride-along or a stale probe silently has no effect on breaker state, only on telemetry
+        // (`onUpstreamError` below always fires regardless, since the attempt genuinely happened).
         if (result.status >= 500) {
           hooks.onUpstreamError(upstream, new Error(`upstream responded ${result.status}`));
-          pool.fail(upstream, { onTransition });
+          pool.fail(upstream, attempt, { onTransition });
         } else {
-          pool.succeed(upstream, { onTransition });
+          pool.succeed(upstream, attempt, { onTransition });
         }
         return { ...result, upstreamMs };
       } catch (err) {
         const e = /** @type {ProxyError & { responded?: boolean, bodyStarted?: boolean }} */ (err);
         if (e instanceof ProxyError && e.code !== 'UPSTREAM_UNREACHABLE' && e.code !== 'UPSTREAM_TIMEOUT' && e.code !== 'UPSTREAM_ERROR') throw e;
         hooks.onUpstreamError(upstream, e);
-        pool.fail(upstream, { onTransition });
+        pool.fail(upstream, attempt, { onTransition });
         const retryable = Proxy.RETRY_METHODS.has(method) && !e.bodyStarted && !e.responded && tried.length < pool.upstreams.length;
         if (!retryable) throw e instanceof ProxyError ? e : new ProxyError(502, 'UPSTREAM_UNREACHABLE', 'upstream unreachable');
       }
