@@ -27,7 +27,7 @@ const BODYLESS_STATUS = new Set([204, 205, 304]);
 
 /**
  * Streams one HTTP exchange to an upstream: header hygiene, forwarding headers, body size limit,
- * timeout, passive failure marking and a single retry for safe methods.
+ * timeout, circuit breaker failure/success reporting (Stage 9) and a single retry for safe methods.
  */
 export class Proxy {
   static RETRY_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -98,8 +98,8 @@ export class Proxy {
    * @param {Route} route
    * @param {UpstreamPool} pool
    * @param {Record<string, string>} extraHeaders
-   * @param {{ onUpstreamError: (u: Upstream, err: Error) => void }} hooks
-   * @returns {Promise<{ upstream: Upstream, status: number, bytesIn: number, bytesOut: number }>}
+   * @param {{ onUpstreamError: (u: Upstream, err: Error) => void, onBreakerTransition?: (u: Upstream, from: string, to: string) => void }} hooks
+   * @returns {Promise<{ upstream: Upstream, status: number, bytesIn: number, bytesOut: number, upstreamMs: number }>}
    */
   async forward(request, reply, route, pool, extraHeaders, hooks) {
     const method = request.method;
@@ -109,20 +109,34 @@ export class Proxy {
     if (hasBody && declared > bodyLimit) throw new ProxyError(413, 'TOO_LARGE', `request body exceeds ${bodyLimit} bytes`);
     const timeoutMs = route.timeoutMs ?? this.defaultTimeoutMs;
     const path = RouteTable.rewrite(route, request.url.split('?')[0]) + (request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : '');
+    const onTransition = (/** @type {Upstream} */ u, /** @type {import('./upstream-pool.js').Transition} */ t) => hooks.onBreakerTransition?.(u, t.from, t.to);
 
     /** @type {Upstream[]} */
     const tried = [];
+    const upstreamStarted = process.hrtime.bigint();
     for (;;) {
-      const upstream = pool.next({ exclude: tried });
+      const upstream = pool.next({ exclude: tried, onTransition });
       if (!upstream) throw new ProxyError(503, 'NO_UPSTREAM', 'no upstream available');
       tried.push(upstream);
       try {
-        return await this.#attempt(request, reply, route, upstream, path, extraHeaders, { hasBody, bodyLimit, timeoutMs });
+        const result = await this.#attempt(request, reply, route, upstream, path, extraHeaders, { hasBody, bodyLimit, timeoutMs });
+        const upstreamMs = Number(process.hrtime.bigint() - upstreamStarted) / 1e6;
+        // Stage 9: a response IS an answer, but a 5xx is still evidence the upstream is unhealthy —
+        // unlike a connect failure/timeout it never throws, so it has to be classified here instead
+        // of in the catch branch below. Anything else (2xx/3xx/4xx) is a normal, healthy exchange —
+        // a client 4xx is never held against the upstream.
+        if (result.status >= 500) {
+          hooks.onUpstreamError(upstream, new Error(`upstream responded ${result.status}`));
+          pool.fail(upstream, { onTransition });
+        } else {
+          pool.succeed(upstream, { onTransition });
+        }
+        return { ...result, upstreamMs };
       } catch (err) {
         const e = /** @type {ProxyError & { responded?: boolean, bodyStarted?: boolean }} */ (err);
-        if (e instanceof ProxyError && e.code !== 'UPSTREAM_UNREACHABLE' && e.code !== 'UPSTREAM_TIMEOUT') throw e;
+        if (e instanceof ProxyError && e.code !== 'UPSTREAM_UNREACHABLE' && e.code !== 'UPSTREAM_TIMEOUT' && e.code !== 'UPSTREAM_ERROR') throw e;
         hooks.onUpstreamError(upstream, e);
-        pool.fail(upstream);
+        pool.fail(upstream, { onTransition });
         const retryable = Proxy.RETRY_METHODS.has(method) && !e.bodyStarted && !e.responded && tried.length < pool.upstreams.length;
         if (!retryable) throw e instanceof ProxyError ? e : new ProxyError(502, 'UPSTREAM_UNREACHABLE', 'upstream unreachable');
       }
@@ -177,7 +191,6 @@ export class Proxy {
         clearTimeout(timer);
         if (settled) return res.destroy();
         settled = true;
-        upstream.markUp();
         const status = res.statusCode ?? 502;
         reply.code(status).headers(this.responseHeaders(res.headers));
         let bytesOut = 0;

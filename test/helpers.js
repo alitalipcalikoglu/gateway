@@ -37,3 +37,22 @@ export function testRoutes(origins = {}, extra = {}) {
 export const silentLog = /** @type {any} */ (new Proxy({}, {
   get: (_t, prop) => (prop === 'child' ? () => silentLog : () => {}),
 }));
+
+/**
+ * Pino-compatible logger that records every call, per level, instead of discarding it — for
+ * asserting on a specific structured log line (a startup warning, a breaker transition, a reload
+ * outcome) without depending on real stdout/stderr.
+ * @returns {{ log: any, calls: { level: string, args: unknown[] }[] }}
+ */
+export function capturingLog() {
+  /** @type {{ level: string, args: unknown[] }[] } */
+  const calls = [];
+  /** @type {any} */
+  const log = new Proxy({}, {
+    get: (_t, prop) => {
+      if (prop === 'child') return () => log;
+      return (/** @type {unknown[]} */ ...args) => calls.push({ level: String(prop), args });
+    },
+  });
+  return { log, calls };
+}

@@ -69,17 +69,20 @@ test('RouteTable rejects broken documents', () => {
 });
 
 test('UpstreamPool round-robins, skips cooled-down upstreams and falls back when all are down', () => {
-  const pool = new UpstreamPool(['http://a:1', 'http://b:1', 'http://c:1'], { connectTimeoutMs: 100, cooldownMs: 1000 });
+  const pool = new UpstreamPool(['http://a:1', 'http://b:1', 'http://c:1'], { connectTimeoutMs: 100, cooldownMs: 1000, breakerThreshold: 1 });
   const seq = () => pool.next({ now: 0 })?.origin;
   assert.deepEqual([seq(), seq(), seq(), seq()], ['http://a:1', 'http://b:1', 'http://c:1', 'http://a:1']);
   const b = pool.upstreams[1];
-  b.markDown(1000, 0);
+  pool.fail(b, { now: 0 });
   const three = [pool.next({ now: 0 }), pool.next({ now: 0 }), pool.next({ now: 0 })].map((u) => u?.origin);
   assert.ok(!three.includes('http://b:1'), 'down upstream skipped');
   assert.ok(three.includes('http://a:1') && three.includes('http://c:1'));
-  assert.ok([...Array(3)].map(() => pool.next({ now: 1001 })?.origin).includes('http://b:1'), 'back after cooldown');
+  // Once the cooldown elapses, a genuinely closed upstream is still preferred over spending the
+  // probe (real breaker behavior) — b only comes back via the single half-open probe when nothing
+  // else is available.
+  assert.equal(pool.next({ exclude: [pool.upstreams[0], pool.upstreams[2]], now: 1001 })?.origin, 'http://b:1', 'cooldown elapsed: claims the single half-open probe when it is the only option');
   assert.equal(pool.next({ exclude: [pool.upstreams[0], pool.upstreams[2]], now: 0 })?.origin, 'http://b:1', 'excluded healthy ones → falls back to the down one');
-  for (const u of pool.upstreams) u.markDown(1000, 0);
+  for (const u of pool.upstreams) pool.fail(u, { now: 0 });
   assert.ok(pool.next({ now: 0 }), 'all down still yields one');
   pool.destroy();
 });

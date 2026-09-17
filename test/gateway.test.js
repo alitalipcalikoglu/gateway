@@ -229,5 +229,6 @@ test('/v1/info reports identity, capabilities and null schemaVersion/serviceCore
     capabilities: ['jwt-auth', 'rate-limit-policy', 'upstream-health-tracking', 'geo-headers', 'cors', 'trace-propagation'],
     schemaVersion: null,
     serviceCore: null,
+    routesRevision: null,
   });
 });

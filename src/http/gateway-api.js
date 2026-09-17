@@ -39,20 +39,65 @@ export class GatewayApi {
    * @param {import('../geo-client.js').GeoClient|null} [deps.geo]
    * @param {import('../jwt-verifier.js').JwtVerifier|null} deps.jwt
    * @param {import('../types.js').Logger} [deps.logger]
+   * @param {string|null} [deps.routesRevision]  Stage 9: file mtime + content hash, see `/v1/info`.
    */
-  constructor({ config, routes, jwt, logger, policies = null, geo = null }) {
+  constructor({ config, routes, jwt, logger, policies = null, geo = null, routesRevision = null }) {
     this.policies = policies;
     this.geo = geo;
     this.config = config;
     this.routes = routes;
     this.jwt = jwt;
     this.logger = logger;
+    this.routesRevision = routesRevision;
     this.proxy = new Proxy({ serverName: config.serverName, defaultTimeoutMs: config.upstreamTimeoutMs, defaultBodyLimit: config.bodyLimit });
     this.limiter = new RateLimiter();
     this.metrics = new Metrics();
     /** @type {Map<string, UpstreamPool>} */
-    this.pools = new Map(routes.routes.map((r) => [r.id, new UpstreamPool(r.upstreams, { connectTimeoutMs: config.upstreamConnectTimeoutMs, cooldownMs: config.upstreamCooldownMs })]));
+    this.pools = GatewayApi.#buildPools(routes, config);
     this.readyCache = { at: 0, ok: false, detail: /** @type {Record<string, string>} */ ({}) };
+  }
+
+  /**
+   * @param {RouteTable} routes
+   * @param {Config} config
+   * @returns {Map<string, UpstreamPool>}
+   */
+  static #buildPools(routes, config) {
+    return new Map(routes.routes.map((r) => [r.id, new UpstreamPool(r.upstreams, { connectTimeoutMs: config.upstreamConnectTimeoutMs, cooldownMs: config.upstreamCooldownMs, breakerThreshold: config.upstreamBreakerThreshold })]));
+  }
+
+  /**
+   * Stage 9 atomic reload: builds a brand-new `RouteTable` + pools (already validated by the
+   * caller — `Application`'s SIGHUP handler — before this is ever called) and swaps them in with
+   * one synchronous assignment. Deliberately does NOT destroy the outgoing pools: an in-flight
+   * request holds its own local reference to the `route`/`pool` it already picked (see `#handle`
+   * below), completely unaffected by `this.routes`/`this.pools` being reassigned out from under
+   * it — destroying the old pools' agents here would forcibly kill those still-in-flight sockets.
+   * The old agents' own idle-socket timeout (`connectTimeoutMs`, the same value used to build
+   * them) reclaims them shortly after they go idle; only final process shutdown forcibly destroys
+   * whatever pools are current at that moment (`destroy()` below).
+   * @param {RouteTable} routes
+   * @param {string} revision
+   */
+  applyReload(routes, revision) {
+    const pools = GatewayApi.#buildPools(routes, this.config);
+    this.routes = routes;
+    this.pools = pools;
+    this.routesRevision = revision;
+  }
+
+  /**
+   * Stage 9: a route with no central policy is a process-local guard only — nothing to warn about.
+   * A route WITH a policy that is public (no `auth: "user"`), rate-limits by IP and fails open
+   * means abuse protection silently disappears the moment the ratelimit service is unavailable —
+   * worth an operator's attention at startup, but not a reason to refuse to start.
+   * @param {import('../types.js').Logger} log
+   */
+  #warnFailOpenIp(log) {
+    for (const r of this.routes.routes) {
+      if (!r.policy || r.auth === 'user' || r.policy.subject !== 'ip' || !r.policy.failOpen) continue;
+      log.warn({ route: r.id, subject: r.policy.subject, failOpen: r.policy.failOpen, dependency: 'ratelimit' }, 'public route rate-limited by IP with failOpen:true — abuse protection is lost while ratelimit is unavailable');
+    }
   }
 
   /** @returns {Promise<FastifyInstance>} */
@@ -81,6 +126,7 @@ export class GatewayApi {
     });
     app.setErrorHandler(this.#errorHandler);
     app.addHook('onSend', async (_request, reply) => this.#securityHeaders(reply));
+    this.#warnFailOpenIp(app.log);
 
     app.get('/health', async () => ({ status: 'ok' }));
     app.get('/ready', async (_request, reply) => {
@@ -94,6 +140,7 @@ export class GatewayApi {
       capabilities: ['jwt-auth', 'rate-limit-policy', 'upstream-health-tracking', 'geo-headers', 'cors', 'trace-propagation'],
       schemaVersion: null,
       serviceCore: null,
+      routesRevision: this.routesRevision,
     }));
     app.get('/metrics', async (request, reply) => {
       if (!config.metricsToken) return reply.code(404).send({ error: { code: 'NOT_FOUND', message: 'metrics disabled' } });
@@ -103,7 +150,7 @@ export class GatewayApi {
         return reply.code(401).send({ error: { code: 'UNAUTHORIZED', message: 'invalid metrics token' } });
       }
       reply.type('text/plain; version=0.0.4; charset=utf-8');
-      return this.metrics.render();
+      return this.metrics.render(this.pools);
     });
     app.all('/*', this.#handle);
     app.all('/', this.#handle);
@@ -160,10 +207,11 @@ export class GatewayApi {
     const path = request.url.split('?')[0];
     const route = this.routes.match(request.hostname, path);
     const log = request.log;
-    const finish = (/** @type {string} */ routeId, /** @type {number} */ status, /** @type {{ upstream?: string, bytesIn?: number, bytesOut?: number }} */ extra = {}) => {
+    const finish = (/** @type {string} */ routeId, /** @type {number} */ status, /** @type {{ upstream?: string, bytesIn?: number, bytesOut?: number, upstreamMs?: number }} */ extra = {}) => {
       const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
       this.metrics.observe(routeId, status, durationMs, extra);
-      log.info({ route: routeId, method: request.method, path, status, durationMs: Math.round(durationMs * 10) / 10, ip: request.ip, upstream: extra.upstream, ua: request.headers['user-agent'], reqId: request.id, traceId: request.trace.traceId }, 'access');
+      if (extra.upstreamMs !== undefined) this.metrics.observeUpstreamLatency(routeId, extra.upstreamMs);
+      log.info({ route: routeId, method: request.method, path, status, durationMs: Math.round(durationMs * 10) / 10, upstreamMs: extra.upstreamMs !== undefined ? Math.round(extra.upstreamMs * 10) / 10 : undefined, ip: request.ip, upstream: extra.upstream, ua: request.headers['user-agent'], reqId: request.id, traceId: request.trace.traceId }, 'access');
     };
 
     if (!route) {
@@ -274,8 +322,12 @@ export class GatewayApi {
           this.metrics.upstreamError(route.id);
           log.warn({ route: route.id, upstream: u.origin, err: err.message, reqId: request.id }, 'upstream attempt failed');
         },
+        onBreakerTransition: (u, from, to) => {
+          this.metrics.breakerTransition(route.id, u.origin, from, to);
+          log.warn({ route: route.id, upstream: u.origin, from, to }, 'breaker transition');
+        },
       });
-      finish(route.id, r.status, { upstream: r.upstream.origin, bytesIn: r.bytesIn, bytesOut: r.bytesOut });
+      finish(route.id, r.status, { upstream: r.upstream.origin, bytesIn: r.bytesIn, bytesOut: r.bytesOut, upstreamMs: r.upstreamMs });
       return reply;
     } catch (err) {
       const status = err instanceof ProxyError ? err.statusCode : 502;

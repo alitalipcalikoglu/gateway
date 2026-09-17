@@ -46,7 +46,7 @@ npm run typecheck
 
 **Purpose:** the single public entry point that routes, authenticates, rate-limits and observes traffic to every other service.
 
-**Responsibilities:** route matching (`routes.json`); JWT verification; rate-limit policy enforcement (delegated to `ratelimit`); geo header injection (delegated to `geo`); CORS; trace propagation; per-upstream health tracking and cooldown.
+**Responsibilities:** route matching (`routes.json`); JWT verification; rate-limit policy enforcement (delegated to `ratelimit`); geo header injection (delegated to `geo`); CORS; trace propagation; per-upstream circuit breaker (closed/open/half-open); live `routes.json` reload via `SIGHUP`.
 
 **Non-responsibilities:** gateway ≠ business logic — it forwards requests and headers, it does not implement or validate domain rules, and it owns no state of its own for rate limits or geolocation (both delegated to their owning service). One narrow exception worth naming: it does read the `email`/`email_verified` claims out of a verified JWT by name to set `x-user-email`/`x-user-email-verified` headers, a small, deliberate coupling to auth's token shape rather than a fully opaque claims pass-through. It does not retry or queue failed requests — that's each upstream's own concern.
 
@@ -67,7 +67,7 @@ npm run typecheck
 | `cors` | Allowed browser origins (or `*`). Preflights are answered by the gateway. Omit for non-browser routes. |
 | `rateLimit`, `bodyLimit`, `timeoutMs` | Per-route overrides of the defaults in `.env`. |
 | `healthPath` | Polled by `/ready`; default `/health`. |
-| `policy` | `{ "name", "subject": "ip" \| "user" \| "key", "cost", "failOpen" }`: check the ratelimit service's policy per client IP, authenticated user or hashed bearer token before forwarding (`RATELIMIT_URL` / `RATELIMIT_API_KEY`). `failOpen` (default true) lets traffic through when the service is unavailable. |
+| `policy` | `{ "name", "subject": "ip" \| "user" \| "key", "cost", "failOpen" }`: check the ratelimit service's policy per client IP, authenticated user or hashed bearer token before forwarding (`RATELIMIT_URL` / `RATELIMIT_API_KEY`). `failOpen` is **required** whenever `policy` is set — no default; decide explicitly per route whether traffic goes through (`true`) or gets `503` (`false`) when the ratelimit service is unavailable. A public route with `subject: "ip"` and `failOpen: true` logs a startup warning (not a startup failure) — it means abuse protection disappears while ratelimit is down. |
 | `geo` | `true` adds `X-Geo-Country`, `X-Geo-Timezone`, `X-Geo-Continent` from the geo service (`GEO_URL` / `GEO_API_KEY`), cached per address; client-sent `X-Geo-*` headers are always dropped. |
 
 `jwt` (required when any route uses `auth: "user"`): `jwksUrl`, `issuer`, `audience` matching the auth service's configuration.
@@ -83,9 +83,17 @@ npm run typecheck
 5. `auth: "user"`: verify `Authorization: Bearer <jwt>` (ES256, issuer, audience, expiry) against the cached JWKS. On success the upstream receives `X-User-Id`, `X-User-Session`, `X-User-Email`, `X-User-Email-Verified`. Failure → `401` with `WWW-Authenticate`; JWKS unreachable → `503`.
 6. Body limit: declared `Content-Length` checked up front, streamed bytes counted during upload → `413`.
 7. Forward: hop-by-hop headers removed (including anything listed in `Connection`), client-supplied `X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-User-*`, `X-Geo-*`, `Via` dropped and replaced with the gateway's own values, `Host` set to the upstream. `X-Request-Id` and `traceparent` are attached: a client-supplied value for either is honoured only when `TRUST_PROXY=true` (and, for `traceparent`, well-formed); otherwise a fresh one is generated. Both are echoed back on the response. Response is streamed back with `Server`/`X-Powered-By` removed and `Via` appended.
-8. Connection failures mark the upstream down and retry once on another upstream for `GET`, `HEAD` and `OPTIONS` (never after the request body started). Otherwise `502 UPSTREAM_UNREACHABLE`. No response headers within the timeout → `504 UPSTREAM_TIMEOUT`.
+8. Connection failures, timeouts and upstream `5xx` responses all count against that upstream's circuit breaker (a client `4xx` never does) and retry once on another upstream for `GET`, `HEAD` and `OPTIONS` (never after the request body started). Otherwise `502 UPSTREAM_UNREACHABLE`. No response headers within the timeout → `504 UPSTREAM_TIMEOUT`. See "Circuit breaker" below.
 
 Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Server: <SERVER_NAME>` and, with TLS, `Strict-Transport-Security`. Upstream-set values win.
+
+### Circuit breaker
+
+Each upstream (not each route) has its own breaker: **closed** (serving, counting consecutive failures), **open** (skipped for `UPSTREAM_COOLDOWN_MS`), **half-open** (cooldown elapsed, exactly one probe request let through — every other concurrent request keeps treating it as unavailable until that probe settles). `UPSTREAM_BREAKER_THRESHOLD` (default `1`) is how many consecutive failures open it; a probe success closes it and resets the count, a probe failure re-opens it and restarts the cooldown. If every upstream on a route is open, the gateway still sends the request somewhere deterministic rather than manufacture a `503` — never a deadlock — without ever sending a second concurrent probe to the same upstream. Structured log line (`route`, `upstream`, `from`, `to`) on every transition, never per request.
+
+### Live routes reload (`SIGHUP`)
+
+`kill -HUP <pid>` (or `pm2 reload atc-gateway` style signal) re-reads, re-validates and atomically swaps in `routes.json` — a bad file (unreadable, invalid, or a route that newly needs an integration you haven't configured) is logged and changes nothing; the previous configuration keeps serving. A request already in flight always finishes against the route/pool it started with; only requests that arrive after a *successful* swap see the new configuration. Circuit breaker state is not migrated across a reload — every reload's pools start `closed` (see [docs/READINESS.md](docs/READINESS.md)). `GET /v1/info`'s `routesRevision` (file mtime + a content hash, never a secret) changes only on a successful reload — poll it to confirm a reload actually landed.
 
 ### Gateway's own endpoints
 
@@ -93,9 +101,10 @@ Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: stri
 |---|---|
 | `GET /health` | Process is up. |
 | `GET /ready` | Every route has at least one upstream answering its `healthPath` (cached 15 s). Returns per-route `healthy/total`. |
-| `GET /metrics` | Prometheus text: requests by route and status class, latency histogram, bytes, upstream errors, rejections. Needs `Authorization: Bearer $METRICS_TOKEN`; disabled when unset. |
+| `GET /v1/info` | Identity, capabilities, `routesRevision`. |
+| `GET /metrics` | Prometheus text: requests by route and status class, latency histogram, bytes, upstream errors, rejections, upstream latency histogram (per route), circuit breaker state/failures/transitions (per route+upstream). Needs `Authorization: Bearer $METRICS_TOKEN`; disabled when unset. |
 
-These three paths are reserved and never forwarded.
+These paths are reserved and never forwarded.
 
 ## Working with the other services
 
@@ -111,6 +120,15 @@ Scenario walkthroughs for every feature live in [examples/](examples/README.md).
 ## Configuration
 
 See [.env.example](.env.example). Nothing is required except the environment variables named by `injectApiKey` entries in your routes. `METRICS_TOKEN` enables `/metrics`.
+
+## Upgrading
+
+**Stage 9**: any existing `routes.json` with a `policy` block that doesn't already set `failOpen`
+now fails startup validation (`<route>.policy.failOpen is required when policy is set`) — there is
+no default any more, on purpose (see "Routes" above). Before upgrading, add an explicit
+`"failOpen": true` or `"failOpen": false` to every `policy` in your `routes.json`. Routes without a
+`policy` are unaffected. `stack`-generated `routes.json` files ship no `policy` block today and need
+no change.
 
 ## Security notes
 
@@ -130,7 +148,7 @@ Class-based; dependencies are injected through constructors, `src/application.js
 | `Application` | `src/application.js` | Wiring, startup, graceful shutdown |
 | `Config` | `src/config.js` | Validated environment |
 | `RouteTable` | `src/route-table.js` | routes.json validation, secret resolution, matching, rewriting |
-| `UpstreamPool`, `Upstream` | `src/upstream-pool.js` | Round-robin, keep-alive agents, passive cooldown |
+| `UpstreamPool`, `Upstream` | `src/upstream-pool.js` | Round-robin, keep-alive agents, circuit breaker |
 | `Proxy` | `src/proxy.js` | Header hygiene, streaming, limits, timeout, retry |
 | `JwtVerifier` | `src/jwt-verifier.js` | JWKS-backed access token verification |
 | `RateLimiter` | `src/rate-limiter.js` | Fixed-window per-client counters |
@@ -142,7 +160,6 @@ Class-based; dependencies are injected through constructors, `src/application.js
 - WebSocket and gRPC proxying.
 - Response caching and compression: keep them at the CDN or in the upstream.
 - Shared (cross-instance) rate limiting: needs a shared store; add when running more than one gateway instance for the same clients.
-- Hot reload of `routes.json`: restart (PM2 `reload` is zero-downtime thanks to `wait_ready`).
 
 ## Scaling model
 
@@ -155,9 +172,14 @@ ceiling across instances. The central `policy` check (via ratelimit) is shared c
 
 Accepts and generates `X-Request-Id` and `traceparent` under the same `TRUST_PROXY` trust boundary
 (honoured only when set, generated fresh otherwise), forwards both to the matched upstream, and
-echoes them on the response. Custom access-log line with `route`, `status`, `durationMs`, `reqId`,
-`traceId`. `/metrics` (bearer `METRICS_TOKEN`) exposes per-route counters, a duration histogram and
-rejection/dependency-error counters — all process-local, reset on restart.
+echoes them on the response. Custom access-log line with `route`, `status`, `durationMs`,
+`upstreamMs` (time spent talking to the upstream — connect through last response byte — omitted
+when the request never reached a route/upstream), `reqId`, `traceId`. `/metrics` (bearer
+`METRICS_TOKEN`) exposes per-route counters, a request duration histogram, an upstream latency
+histogram (`gateway_upstream_latency_ms`, per route only — never per raw URL, user, IP or upstream
+instance), circuit breaker state/failure-count/transition counters (per route+upstream — a small,
+static, config-bounded set, not per-request data) and rejection/dependency-error counters — all
+process-local, reset on restart.
 
 ## Backup / restore
 

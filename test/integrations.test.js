@@ -38,7 +38,7 @@ const geo = createServer((req, res) => {
 before(async () => {
   await Promise.all([listen(echo), listen(ratelimit), listen(geo)]);
   const doc = /** @type {any} */ (routesDoc({ api: origin(echo), files: origin(echo), auth: origin(echo) }));
-  doc.routes.push({ id: 'open', pathPrefix: '/open/', upstreams: [origin(echo)], policy: { name: 'api', subject: 'ip' }, geo: true });
+  doc.routes.push({ id: 'open', pathPrefix: '/open/', upstreams: [origin(echo)], policy: { name: 'api', subject: 'ip', failOpen: true }, geo: true });
   doc.routes.push({ id: 'closed', pathPrefix: '/closed/', upstreams: [origin(echo)], policy: { name: 'login', subject: 'key', cost: 2, failOpen: false } });
   const config = testConfig({ RATELIMIT_URL: origin(ratelimit), RATELIMIT_API_KEY: 'r'.repeat(40), GEO_URL: origin(geo), GEO_API_KEY: 'g'.repeat(40), GEO_CACHE_SEC: '600', METRICS_TOKEN: 'm'.repeat(40) });
   const routes = RouteTable.parse(doc, routesEnv);
@@ -54,14 +54,16 @@ test('config: integrations need both variables; routes need the integration', ()
   assert.deepEqual(c.ratelimit, { url: 'http://rl', apiKey: 'r'.repeat(40), timeoutMs: 300 });
   assert.equal(c.geo, null);
   const doc = /** @type {any} */ (routesDoc({}));
-  doc.routes.push({ id: 'p', pathPrefix: '/p/', upstreams: ['http://127.0.0.1:1'], policy: { name: 'api' } });
+  doc.routes.push({ id: 'p', pathPrefix: '/p/', upstreams: ['http://127.0.0.1:1'], policy: { name: 'api', failOpen: true } });
   assert.throws(() => new Application(testConfig(), RouteTable.parse(doc, routesEnv)), /need RATELIMIT_URL/);
-  doc.routes.at(-1).policy = { name: 'Bad Name' };
+  doc.routes.at(-1).policy = { name: 'Bad Name', failOpen: true };
   assert.throws(() => RouteTable.parse(doc, routesEnv), /policy name/);
-  doc.routes.at(-1).policy = { name: 'api', subject: 'user' };
+  doc.routes.at(-1).policy = { name: 'api', subject: 'user', failOpen: true };
   assert.throws(() => RouteTable.parse(doc, routesEnv), /needs auth "user"/);
   doc.routes.at(-1).policy = { name: 'api', subject: 'ip', failOpen: 'yes' };
   assert.throws(() => RouteTable.parse(doc, routesEnv), /must be true or false/);
+  doc.routes.at(-1).policy = { name: 'api', subject: 'ip' };
+  assert.throws(() => RouteTable.parse(doc, routesEnv), /failOpen is required/);
 });
 
 test('policy: checks the ratelimit service per subject, sets RateLimit-* headers, answers 429 and BLOCKED', async () => {

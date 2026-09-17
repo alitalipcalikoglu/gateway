@@ -21,6 +21,7 @@ export class Config {
     this.upstreamTimeoutMs = v.upstreamTimeoutMs;
     this.upstreamConnectTimeoutMs = v.upstreamConnectTimeoutMs;
     this.upstreamCooldownMs = v.upstreamCooldownMs;
+    this.upstreamBreakerThreshold = v.upstreamBreakerThreshold;
     this.metricsToken = v.metricsToken;
     this.hstsMaxAge = v.hstsMaxAge;
     this.serverName = v.serverName;
@@ -54,6 +55,9 @@ export class Config {
       upstreamTimeoutMs: r.integer('UPSTREAM_TIMEOUT_MS', 30_000, { min: 1_000 }),
       upstreamConnectTimeoutMs: r.integer('UPSTREAM_CONNECT_TIMEOUT_MS', 5_000, { min: 100 }),
       upstreamCooldownMs: r.integer('UPSTREAM_COOLDOWN_MS', 10_000, { min: 0 }),
+      // Stage 9: consecutive failures (closed state) before the breaker opens. Default 1 keeps the
+      // pre-Stage-9 behavior (any single failure opens it) unless an operator opts into tolerance.
+      upstreamBreakerThreshold: r.integer('UPSTREAM_BREAKER_THRESHOLD', 1, { min: 1 }),
       metricsToken,
       hstsMaxAge: r.integer('HSTS_MAX_AGE', certPath ? 31_536_000 : 0, { min: 0 }),
       ratelimit: Config.#service(r, 'RATELIMIT', { timeoutMs: r.integer('RATELIMIT_TIMEOUT_MS', 300, { min: 50 }) }),

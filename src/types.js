@@ -15,6 +15,7 @@
  * @property {number} upstreamTimeoutMs     Time to first response byte.
  * @property {number} upstreamConnectTimeoutMs
  * @property {number} upstreamCooldownMs    How long a failed upstream is skipped.
+ * @property {number} upstreamBreakerThreshold  Consecutive failures before the breaker opens.
  * @property {string|null} metricsToken     Bearer token for /metrics; null disables the endpoint.
  * @property {number} hstsMaxAge            0 disables HSTS.
  * @property {string} serverName            Value of the Via / Server headers.

@@ -15,11 +15,11 @@ Create the policies in the ratelimit service (or the console), then reference th
 {
   "routes": [
     { "id": "api", "pathPrefix": "/api/", "upstreams": ["http://10.0.0.3:3003"], "auth": "user",
-      "policy": { "name": "api", "subject": "user" } },
+      "policy": { "name": "api", "subject": "user", "failOpen": true } },
     { "id": "login", "pathPrefix": "/api/auth/login", "upstreams": ["http://10.0.0.2:3002"], "injectApiKey": "AUTH_API_KEY",
       "policy": { "name": "login", "subject": "ip", "failOpen": false } },
     { "id": "partners", "pathPrefix": "/partners/", "upstreams": ["http://10.0.0.20:8080"],
-      "policy": { "name": "partner-api", "subject": "key", "cost": 1 } }
+      "policy": { "name": "partner-api", "subject": "key", "cost": 1, "failOpen": true } }
   ]
 }
 ```
@@ -29,7 +29,7 @@ Create the policies in the ratelimit service (or the console), then reference th
 | `name` | Policy name in the ratelimit service. A missing policy counts as "service unavailable" (see below), so create it before deploying the route. |
 | `subject` | `ip` (default): client address. `user`: the authenticated user id (`auth: "user"` required). `key`: a hash of the client's bearer token, so third-party API keys are limited without the gateway storing them; requests without a token fall back to the IP. |
 | `cost` | Units per request, default 1. Heavier endpoints can charge more against the same policy. |
-| `failOpen` | `true` (default): when the ratelimit service is unreachable, times out or answers 5xx, the request goes through and `gateway_dependency_errors_total{dependency="ratelimit"}` increments. `false`: the client gets `503 RATE_LIMIT_UNAVAILABLE` with `Retry-After: 5`. Use `false` for security limits (login, signup, codes), `true` for capacity limits. |
+| `failOpen` | **Required, no default** — decide explicitly per route. `true`: when the ratelimit service is unreachable, times out or answers 5xx, the request goes through and `gateway_dependency_errors_total{dependency="ratelimit"}` increments. `false`: the client gets `503 RATE_LIMIT_UNAVAILABLE` with `Retry-After: 5`. Use `false` for security limits (login, signup, codes), `true` for capacity limits. A public route (`subject: "ip"`, no `auth: "user"`) with `failOpen: true` logs a startup warning — it means abuse protection disappears while ratelimit is down; not a startup failure, just something to consciously accept. |
 
 ## What the client sees
 

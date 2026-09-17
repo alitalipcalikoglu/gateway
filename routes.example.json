@@ -14,7 +14,8 @@
       "injectApiKey": "AUTH_API_KEY",
       "cors": ["https://shop.example.com"],
       "rateLimit": 60,
-      "bodyLimit": 16384
+      "bodyLimit": 16384,
+      "policy": { "name": "login", "subject": "ip", "failOpen": false }
     },
     {
       "id": "media-user",
@@ -34,7 +35,8 @@
       "methods": ["GET", "HEAD", "OPTIONS"],
       "cors": ["*"],
       "rateLimit": 1200,
-      "timeoutMs": 120000
+      "timeoutMs": 120000,
+      "policy": { "name": "public-downloads", "subject": "ip", "failOpen": true }
     },
     {
       "id": "jwks",

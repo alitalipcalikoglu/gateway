@@ -143,7 +143,8 @@ export class RouteTable {
     const subject = o.subject === undefined ? 'ip' : v.string(o.subject, `${where}.subject`, 2, 4);
     if (subject !== 'ip' && subject !== 'user' && subject !== 'key') throw new ConfigError(`${where}.subject must be "ip", "user" or "key"`);
     if (subject === 'user' && auth !== 'user') throw new ConfigError(`${where}.subject "user" needs auth "user" on the route`);
-    return { name, subject: /** @type {'ip'|'user'|'key'} */ (subject), cost: o.cost === undefined || o.cost === null ? 1 : v.integer(o.cost, `${where}.cost`, 1), failOpen: o.failOpen === undefined || o.failOpen === null ? true : v.boolean(o.failOpen, `${where}.failOpen`) };
+    if (o.failOpen === undefined || o.failOpen === null) throw new ConfigError(`${where}.failOpen is required when policy is set (no default — decide explicitly per route)`);
+    return { name, subject: /** @type {'ip'|'user'|'key'} */ (subject), cost: o.cost === undefined || o.cost === null ? 1 : v.integer(o.cost, `${where}.cost`, 1), failOpen: v.boolean(o.failOpen, `${where}.failOpen`) };
   }
 
   /**
