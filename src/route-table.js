@@ -123,7 +123,27 @@ export class RouteTable {
       bodyLimit: o.bodyLimit === undefined || o.bodyLimit === null ? null : v.integer(o.bodyLimit, `${where}.bodyLimit`, 0),
       timeoutMs: o.timeoutMs === undefined || o.timeoutMs === null ? null : v.integer(o.timeoutMs, `${where}.timeoutMs`, 100),
       healthPath: o.healthPath === undefined || o.healthPath === null ? '/health' : v.string(o.healthPath, `${where}.healthPath`, 1, 200),
+      policy: RouteTable.#policy(v, o.policy, `${where}.policy`, auth),
+      geo: o.geo === undefined || o.geo === null ? false : v.boolean(o.geo, `${where}.geo`),
     };
+  }
+
+  /**
+   * @param {Validator} v
+   * @param {unknown} raw
+   * @param {string} where
+   * @param {string} auth
+   * @returns {import('./types.js').RoutePolicy|null}
+   */
+  static #policy(v, raw, where, auth) {
+    if (raw === undefined || raw === null) return null;
+    const o = v.object(raw, where);
+    const name = v.string(o.name, `${where}.name`, 1, 80);
+    if (!/^[a-z0-9]+([.\-_][a-z0-9]+)*$/.test(name)) throw new ConfigError(`${where}.name must be a ratelimit policy name (lower-case segments)`);
+    const subject = o.subject === undefined ? 'ip' : v.string(o.subject, `${where}.subject`, 2, 4);
+    if (subject !== 'ip' && subject !== 'user' && subject !== 'key') throw new ConfigError(`${where}.subject must be "ip", "user" or "key"`);
+    if (subject === 'user' && auth !== 'user') throw new ConfigError(`${where}.subject "user" needs auth "user" on the route`);
+    return { name, subject: /** @type {'ip'|'user'|'key'} */ (subject), cost: o.cost === undefined || o.cost === null ? 1 : v.integer(o.cost, `${where}.cost`, 1), failOpen: o.failOpen === undefined || o.failOpen === null ? true : v.boolean(o.failOpen, `${where}.failOpen`) };
   }
 
   /**
@@ -171,6 +191,12 @@ export class RouteTable {
 
 /** Tiny structural validator producing ConfigError messages with a location. */
 class Validator {
+  /** @param {unknown} v @param {string} where */
+  boolean(v, where) {
+    if (typeof v !== 'boolean') throw new ConfigError(`${where} must be true or false`);
+    return v;
+  }
+
   /**
    * @param {unknown} v
    * @param {string} where

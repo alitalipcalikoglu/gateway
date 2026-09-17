@@ -24,6 +24,8 @@ export class Config {
     this.metricsToken = v.metricsToken;
     this.hstsMaxAge = v.hstsMaxAge;
     this.serverName = v.serverName;
+    this.ratelimit = v.ratelimit;
+    this.geo = v.geo;
     Object.freeze(this);
   }
 
@@ -54,8 +56,27 @@ export class Config {
       upstreamCooldownMs: r.integer('UPSTREAM_COOLDOWN_MS', 10_000, { min: 0 }),
       metricsToken,
       hstsMaxAge: r.integer('HSTS_MAX_AGE', certPath ? 31_536_000 : 0, { min: 0 }),
+      ratelimit: Config.#service(r, 'RATELIMIT', { timeoutMs: r.integer('RATELIMIT_TIMEOUT_MS', 300, { min: 50 }) }),
+      geo: Config.#service(r, 'GEO', { timeoutMs: r.integer('GEO_TIMEOUT_MS', 300, { min: 50 }), cacheSec: r.integer('GEO_CACHE_SEC', 600, { min: 1 }) }),
       serverName,
     });
+  }
+  /**
+   * `<PREFIX>_URL` + `<PREFIX>_API_KEY`: both or neither. Empty = the integration is off.
+   * @template T
+   * @param {EnvReader} r
+   * @param {string} prefix
+   * @param {T} extra
+   * @returns {({ url: string, apiKey: string } & T)|null}
+   */
+  static #service(r, prefix, extra) {
+    const url = r.optional(`${prefix}_URL`).replace(/\/+$/, '');
+    const apiKey = r.optional(`${prefix}_API_KEY`);
+    if (!url && !apiKey) return null;
+    if (!url || !apiKey) throw new ConfigError(`${prefix}_URL and ${prefix}_API_KEY must be set together`);
+    if (!/^https?:\/\/[^\s]+$/.test(url)) throw new ConfigError(`${prefix}_URL must be an absolute http(s) URL`);
+    if (apiKey.length < 32) throw new ConfigError(`${prefix}_API_KEY must be at least 32 characters`);
+    return { url, apiKey, ...extra };
   }
 }
 

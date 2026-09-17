@@ -8,6 +8,8 @@
  * @property {boolean} trustProxy
  * @property {{ certPath: string, keyPath: string }|null} tls
  * @property {string} routesFile
+ * @property {{ url: string, apiKey: string, timeoutMs: number }|null} ratelimit   Ratelimit service for route policies; null = off.
+ * @property {{ url: string, apiKey: string, timeoutMs: number, cacheSec: number }|null} geo   Geo service for X-Geo-* headers; null = off.
  * @property {number} rateLimitMax          Default requests per minute per client IP.
  * @property {number} bodyLimit             Default request body limit in bytes.
  * @property {number} upstreamTimeoutMs     Time to first response byte.
@@ -36,6 +38,16 @@
  * @property {number|null} bodyLimit       Bytes override.
  * @property {number|null} timeoutMs       Upstream timeout override.
  * @property {string} healthPath           Upstream path polled by /ready.
+ * @property {RoutePolicy|null} policy     Central rate limit policy checked through the ratelimit service.
+ * @property {boolean} geo                 Add X-Geo-Country / X-Geo-Timezone / X-Geo-Continent from the geo service.
+ */
+
+/**
+ * @typedef {object} RoutePolicy
+ * @property {string} name                 Policy name in the ratelimit service.
+ * @property {'ip'|'user'|'key'} subject   What is limited: client IP, authenticated user id, or the client's bearer token (hashed).
+ * @property {number} cost
+ * @property {boolean} failOpen            Let the request through when the ratelimit service is unavailable.
  */
 
 /**

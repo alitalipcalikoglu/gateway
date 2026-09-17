@@ -1,5 +1,7 @@
-import { Config } from './config.js';
+import { Config, ConfigError } from './config.js';
+import { GeoClient } from './geo-client.js';
 import { GatewayApi } from './http/gateway-api.js';
+import { RateLimitClient } from './rate-limit-client.js';
 import { JwtVerifier } from './jwt-verifier.js';
 import { RouteTable } from './route-table.js';
 
@@ -13,7 +15,11 @@ export class Application {
     this.config = config;
     this.routes = routes;
     this.jwt = routes.jwt ? new JwtVerifier(routes.jwt) : null;
-    this.api = new GatewayApi({ config, routes, jwt: this.jwt });
+    this.policies = config.ratelimit ? new RateLimitClient(config.ratelimit) : null;
+    this.geo = config.geo ? new GeoClient(config.geo) : null;
+    if (!this.policies && routes.routes.some((r) => r.policy)) throw new ConfigError('routes with a policy need RATELIMIT_URL and RATELIMIT_API_KEY');
+    if (!this.geo && routes.routes.some((r) => r.geo)) throw new ConfigError('routes with geo: true need GEO_URL and GEO_API_KEY');
+    this.api = new GatewayApi({ config, routes, jwt: this.jwt, policies: this.policies, geo: this.geo });
     /** @type {import('fastify').FastifyInstance|null} */
     this.app = null;
     this.shuttingDown = false;
@@ -39,7 +45,8 @@ export class Application {
     await app.listen({ port: this.config.port, host: this.config.host });
     app.log.info({
       tls: this.config.tls !== null,
-      routes: this.routes.routes.map((r) => ({ id: r.id, host: r.host, prefix: r.pathPrefix, upstreams: r.upstreams.length, auth: r.auth, injectsKey: r.injectApiKey !== null })),
+      routes: this.routes.routes.map((r) => ({ id: r.id, host: r.host, prefix: r.pathPrefix, upstreams: r.upstreams.length, auth: r.auth, injectsKey: r.injectApiKey !== null, policy: r.policy?.name ?? null, geo: r.geo })),
+      integrations: { ratelimit: this.policies !== null, geo: this.geo !== null },
       jwt: this.routes.jwt ? { issuer: this.routes.jwt.issuer, audience: this.routes.jwt.audience } : null,
     }, this.config.tls ? 'serving HTTPS' : 'serving plain HTTP');
     if (process.send) process.send('ready'); // PM2 wait_ready

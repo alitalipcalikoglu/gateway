@@ -2,6 +2,7 @@ import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import Fastify from 'fastify';
 import { JwtError } from '../jwt-verifier.js';
+import { RateLimitUnavailable } from '../rate-limit-client.js';
 import { Metrics } from '../metrics.js';
 import { Proxy, ProxyError } from '../proxy.js';
 import { RateLimiter } from '../rate-limiter.js';
@@ -26,10 +27,14 @@ export class GatewayApi {
    * @param {object} deps
    * @param {Config} deps.config
    * @param {RouteTable} deps.routes
+   * @param {import('../rate-limit-client.js').RateLimitClient|null} [deps.policies]
+   * @param {import('../geo-client.js').GeoClient|null} [deps.geo]
    * @param {import('../jwt-verifier.js').JwtVerifier|null} deps.jwt
    * @param {import('../types.js').Logger} [deps.logger]
    */
-  constructor({ config, routes, jwt, logger }) {
+  constructor({ config, routes, jwt, logger, policies = null, geo = null }) {
+    this.policies = policies;
+    this.geo = geo;
     this.config = config;
     this.routes = routes;
     this.jwt = jwt;
@@ -189,6 +194,39 @@ export class GatewayApi {
       }
     }
 
+    if (route.policy && this.policies) {
+      const subject = GatewayApi.#subject(route.policy.subject, request, extra['x-user-id']);
+      try {
+        const d = await this.policies.check({ policy: route.policy.name, subject, cost: route.policy.cost });
+        reply.header('ratelimit-limit', String(d.limit));
+        reply.header('ratelimit-remaining', String(d.remaining));
+        reply.header('ratelimit-reset', String(Math.max(0, Math.ceil((Date.parse(d.resetAt) - Date.now()) / 1000))));
+        if (!d.allowed) {
+          this.metrics.gateway.policyDenied += 1;
+          if (d.retryAfter !== null) reply.header('retry-after', String(d.retryAfter));
+          finish(route.id, 429);
+          return reply.code(429).send({ error: { code: d.blocked ? 'BLOCKED' : 'RATE_LIMITED', message: d.blocked ? 'this client is blocked' : 'too many requests' } });
+        }
+      } catch (err) {
+        this.metrics.dependencies.ratelimit += 1;
+        const code = err instanceof RateLimitUnavailable ? err.code : 'UNKNOWN';
+        log.warn({ route: route.id, policy: route.policy.name, code, err: err instanceof Error ? err.message : String(err), reqId: request.id }, route.policy.failOpen ? 'ratelimit unavailable, failing open' : 'ratelimit unavailable, failing closed');
+        if (!route.policy.failOpen) {
+          this.metrics.gateway.policyUnavailable += 1;
+          reply.header('retry-after', '5');
+          finish(route.id, 503);
+          return reply.code(503).send({ error: { code: 'RATE_LIMIT_UNAVAILABLE', message: 'rate limiting temporarily unavailable' } });
+        }
+      }
+    }
+    if (route.geo && this.geo) {
+      const g = await this.geo.lookup(request.ip);
+      if (g === null && this.geo.stats.errors) this.metrics.dependencies.geo = this.geo.stats.errors;
+      extra['x-geo-country'] = g?.country ?? '';
+      extra['x-geo-timezone'] = g?.timezone ?? '';
+      extra['x-geo-continent'] = g?.continent ?? '';
+    }
+
     const pool = /** @type {UpstreamPool} */ (this.pools.get(route.id));
     reply.header('x-request-id', request.id);
     try {
@@ -206,6 +244,23 @@ export class GatewayApi {
       throw err;
     }
   };
+
+  /**
+   * The string the policy counts: the client IP, the authenticated user id, or a hash of the
+   * client's bearer token (so third-party API keys are limited without being stored anywhere).
+   * @param {'ip'|'user'|'key'} kind
+   * @param {FastifyRequest} request
+   * @param {string|undefined} userId
+   */
+  static #subject(kind, request, userId) {
+    if (kind === 'user' && userId) return `user:${userId}`;
+    if (kind === 'key') {
+      const header = request.headers.authorization ?? '';
+      const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+      if (token) return `key:${createHash('sha256').update(token).digest('hex').slice(0, 24)}`;
+    }
+    return `ip:${request.ip}`;
+  }
 
   /** Every route needs at least one upstream answering its health path. */
   async #readiness() {

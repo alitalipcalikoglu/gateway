@@ -5,7 +5,8 @@ export class Metrics {
   constructor() {
     /** @type {Map<string, { requests: Map<string, number>, latency: number[], latencySum: number, latencyCount: number, bytesIn: number, bytesOut: number, upstreamErrors: number }>} */
     this.routes = new Map();
-    this.gateway = { rateLimited: 0, unauthorized: 0, noRoute: 0 };
+    this.gateway = { rateLimited: 0, unauthorized: 0, noRoute: 0, policyDenied: 0, policyUnavailable: 0 };
+    this.dependencies = { ratelimit: 0, geo: 0 };
   }
 
   /** @param {string} routeId */
@@ -64,6 +65,11 @@ export class Metrics {
       `gateway_rejected_total{reason="rate_limited"} ${this.gateway.rateLimited}`,
       `gateway_rejected_total{reason="unauthorized"} ${this.gateway.unauthorized}`,
       `gateway_rejected_total{reason="no_route"} ${this.gateway.noRoute}`,
+      `gateway_rejected_total{reason="policy"} ${this.gateway.policyDenied}`,
+      `gateway_rejected_total{reason="policy_unavailable"} ${this.gateway.policyUnavailable}`,
+      '# HELP gateway_dependency_errors_total Failed calls to the ratelimit and geo services (fail-open requests included).', '# TYPE gateway_dependency_errors_total counter',
+      `gateway_dependency_errors_total{dependency="ratelimit"} ${this.dependencies.ratelimit}`,
+      `gateway_dependency_errors_total{dependency="geo"} ${this.dependencies.geo}`,
       '# HELP gateway_process_uptime_seconds Process uptime.', '# TYPE gateway_process_uptime_seconds gauge',
       `gateway_process_uptime_seconds ${process.uptime().toFixed(0)}`,
       '',

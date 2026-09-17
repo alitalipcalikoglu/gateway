@@ -55,7 +55,7 @@ export class Proxy {
     const out = {};
     const connectionTokens = new Set((request.headers.connection ?? '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
     for (const [k, v] of Object.entries(request.headers)) {
-      if (v === undefined || HOP_BY_HOP.has(k) || STRIP_FROM_CLIENT.has(k) || connectionTokens.has(k) || k.startsWith('x-user-')) continue;
+      if (v === undefined || HOP_BY_HOP.has(k) || STRIP_FROM_CLIENT.has(k) || connectionTokens.has(k) || k.startsWith('x-user-') || k.startsWith('x-geo-')) continue;
       if (k === 'authorization' && (route.injectApiKey || route.auth === 'user')) continue;
       out[k] = v;
     }

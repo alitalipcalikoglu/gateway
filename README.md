@@ -59,6 +59,8 @@ npm run typecheck
 | `cors` | Allowed browser origins (or `*`). Preflights are answered by the gateway. Omit for non-browser routes. |
 | `rateLimit`, `bodyLimit`, `timeoutMs` | Per-route overrides of the defaults in `.env`. |
 | `healthPath` | Polled by `/ready`; default `/health`. |
+| `policy` | `{ "name", "subject": "ip" \| "user" \| "key", "cost", "failOpen" }`: check the ratelimit service's policy per client IP, authenticated user or hashed bearer token before forwarding (`RATELIMIT_URL` / `RATELIMIT_API_KEY`). `failOpen` (default true) lets traffic through when the service is unavailable. |
+| `geo` | `true` adds `X-Geo-Country`, `X-Geo-Timezone`, `X-Geo-Continent` from the geo service (`GEO_URL` / `GEO_API_KEY`), cached per address; client-sent `X-Geo-*` headers are always dropped. |
 
 `jwt` (required when any route uses `auth: "user"`): `jwksUrl`, `issuer`, `audience` matching the auth service's configuration.
 
@@ -68,6 +70,8 @@ npm run typecheck
 2. CORS: if the route has `cors` and the request is a preflight, answer `204` here. Otherwise remember to add `Access-Control-Allow-Origin` for allowed origins.
 3. Method allow-list → `405`.
 4. Rate limit per route and client IP (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Retry-After` on `429`).
+5. `policy`: ask the ratelimit service (`RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset`; `429 RATE_LIMITED` or `BLOCKED`; `503 RATE_LIMIT_UNAVAILABLE` when the service is down and `failOpen` is false).
+6. `geo`: look up the client address in the geo service and set the `X-Geo-*` headers.
 5. `auth: "user"`: verify `Authorization: Bearer <jwt>` (ES256, issuer, audience, expiry) against the cached JWKS. On success the upstream receives `X-User-Id`, `X-User-Session`, `X-User-Email`, `X-User-Email-Verified`. Failure → `401` with `WWW-Authenticate`; JWKS unreachable → `503`.
 6. Body limit: declared `Content-Length` checked up front, streamed bytes counted during upload → `413`.
 7. Forward: hop-by-hop headers removed (including anything listed in `Connection`), client-supplied `X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-User-*`, `Via` dropped and replaced with the gateway's own values, `X-Request-Id` attached, `Host` set to the upstream. Response is streamed back with `Server`/`X-Powered-By` removed and `Via` appended.
