@@ -74,7 +74,7 @@ npm run typecheck
 6. `geo`: look up the client address in the geo service and set the `X-Geo-*` headers.
 5. `auth: "user"`: verify `Authorization: Bearer <jwt>` (ES256, issuer, audience, expiry) against the cached JWKS. On success the upstream receives `X-User-Id`, `X-User-Session`, `X-User-Email`, `X-User-Email-Verified`. Failure → `401` with `WWW-Authenticate`; JWKS unreachable → `503`.
 6. Body limit: declared `Content-Length` checked up front, streamed bytes counted during upload → `413`.
-7. Forward: hop-by-hop headers removed (including anything listed in `Connection`), client-supplied `X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-User-*`, `Via` dropped and replaced with the gateway's own values, `X-Request-Id` attached, `Host` set to the upstream. Response is streamed back with `Server`/`X-Powered-By` removed and `Via` appended.
+7. Forward: hop-by-hop headers removed (including anything listed in `Connection`), client-supplied `X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-User-*`, `X-Geo-*`, `Via` dropped and replaced with the gateway's own values, `Host` set to the upstream. `X-Request-Id` and `traceparent` are attached: a client-supplied value for either is honoured only when `TRUST_PROXY=true` (and, for `traceparent`, well-formed); otherwise a fresh one is generated. Both are echoed back on the response. Response is streamed back with `Server`/`X-Powered-By` removed and `Via` appended.
 8. Connection failures mark the upstream down and retry once on another upstream for `GET`, `HEAD` and `OPTIONS` (never after the request body started). Otherwise `502 UPSTREAM_UNREACHABLE`. No response headers within the timeout → `504 UPSTREAM_TIMEOUT`.
 
 Every response carries `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Server: <SERVER_NAME>` and, with TLS, `Strict-Transport-Security`. Upstream-set values win.
@@ -135,6 +135,28 @@ Class-based; dependencies are injected through constructors, `src/application.js
 - Response caching and compression: keep them at the CDN or in the upstream.
 - Shared (cross-instance) rate limiting: needs a shared store; add when running more than one gateway instance for the same clients.
 - Hot reload of `routes.json`: restart (PM2 `reload` is zero-downtime thanks to `wait_ready`).
+
+## Scaling model
+
+Stateless and horizontally scalable: any number of instances behind a load balancer works, nothing
+is written to disk. The local per-IP rate limiter, the passive upstream-cooldown state and the geo
+lookup cache are per-instance, not shared — a route's local `rateLimit` is therefore not a hard
+ceiling across instances. The central `policy` check (via ratelimit) is shared correctly by design.
+
+## Observability
+
+Accepts and generates `X-Request-Id` and `traceparent` under the same `TRUST_PROXY` trust boundary
+(honoured only when set, generated fresh otherwise), forwards both to the matched upstream, and
+echoes them on the response. Custom access-log line with `route`, `status`, `durationMs`, `reqId`,
+`traceId`. `/metrics` (bearer `METRICS_TOKEN`) exposes per-route counters, a duration histogram and
+rejection/dependency-error counters — all process-local, reset on restart.
+
+## Backup / restore
+
+No database. The only state to keep under version control is `routes.json` itself; restoring means
+redeploying it and restarting.
+
+See [docs/READINESS.md](docs/READINESS.md) for the full contract.
 
 ## License
 

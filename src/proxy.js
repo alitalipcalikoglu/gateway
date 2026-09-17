@@ -68,6 +68,7 @@ export class Proxy {
     out['x-client-ip'] = request.ip;
     if (request.headers['user-agent']) out['x-client-user-agent'] = request.headers['user-agent'];
     out['x-request-id'] = request.id;
+    out.traceparent = request.trace.toString();
     out.via = `1.1 ${this.serverName}`;
     if (route.injectApiKey) out.authorization = `Bearer ${route.injectApiKey}`;
     Object.assign(out, extra);

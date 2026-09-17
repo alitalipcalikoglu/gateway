@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import { JwtError } from '../jwt-verifier.js';
 import { RateLimitUnavailable } from '../rate-limit-client.js';
 import { Metrics } from '../metrics.js';
+import { TraceContext } from '../trace-context.js';
 import { Proxy, ProxyError } from '../proxy.js';
 import { RateLimiter } from '../rate-limiter.js';
 import { UpstreamPool } from '../upstream-pool.js';
@@ -57,12 +58,20 @@ export class GatewayApi {
       trustProxy: config.trustProxy,
       disableRequestLogging: true,
       requestIdHeader: false,
-      genReqId: () => randomUUID(),
+      // Only when the gateway is told it sits behind something that sets these faithfully
+      // (TRUST_PROXY=true, same flag Fastify itself uses for X-Forwarded-*) is an inbound
+      // X-Request-Id honoured; anyone else's request id is discarded and a fresh one generated,
+      // exactly as for X-Forwarded-For today. Same trust boundary applies to `traceparent` below.
+      genReqId: (req) => GatewayApi.#inboundRequestId(req.headers['x-request-id'], config.trustProxy) ?? randomUUID(),
       bodyLimit: Number.MAX_SAFE_INTEGER, // bodies are streamed and limited by the proxy, never buffered
       exposeHeadRoutes: false,
     });
     app.removeAllContentTypeParsers();
     app.addContentTypeParser('*', (_request, payload, done) => done(null, payload));
+    app.decorateRequest('trace', /** @type {any} */ (null));
+    app.addHook('onRequest', async (request) => {
+      request.trace = TraceContext.forRequest(/** @type {string|undefined} */ (request.headers.traceparent), config.trustProxy);
+    });
     app.setErrorHandler(this.#errorHandler);
     app.addHook('onSend', async (_request, reply) => this.#securityHeaders(reply));
 
@@ -92,6 +101,20 @@ export class GatewayApi {
    */
   static #equal(a, b) {
     return timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest());
+  }
+
+  /** Printable ASCII, no whitespace or control characters, capped at a sane length. */
+  static #REQUEST_ID_PATTERN = /^[\x21-\x7e]{1,128}$/;
+
+  /**
+   * @param {string|string[]|undefined} header
+   * @param {boolean} trusted
+   * @returns {string|undefined}
+   */
+  static #inboundRequestId(header, trusted) {
+    if (!trusted) return undefined;
+    const value = Array.isArray(header) ? header[0] : header;
+    return typeof value === 'string' && GatewayApi.#REQUEST_ID_PATTERN.test(value) ? value : undefined;
   }
 
   /** @param {FastifyReply} reply */
@@ -125,7 +148,7 @@ export class GatewayApi {
     const finish = (/** @type {string} */ routeId, /** @type {number} */ status, /** @type {{ upstream?: string, bytesIn?: number, bytesOut?: number }} */ extra = {}) => {
       const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
       this.metrics.observe(routeId, status, durationMs, extra);
-      log.info({ route: routeId, method: request.method, path, status, durationMs: Math.round(durationMs * 10) / 10, ip: request.ip, upstream: extra.upstream, ua: request.headers['user-agent'], reqId: request.id }, 'access');
+      log.info({ route: routeId, method: request.method, path, status, durationMs: Math.round(durationMs * 10) / 10, ip: request.ip, upstream: extra.upstream, ua: request.headers['user-agent'], reqId: request.id, traceId: request.trace.traceId }, 'access');
     };
 
     if (!route) {
@@ -229,6 +252,7 @@ export class GatewayApi {
 
     const pool = /** @type {UpstreamPool} */ (this.pools.get(route.id));
     reply.header('x-request-id', request.id);
+    reply.header('traceparent', request.trace.toString());
     try {
       const r = await this.proxy.forward(request, reply, route, pool, extra, {
         onUpstreamError: (u, err) => {
