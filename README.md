@@ -184,7 +184,10 @@ when the request never reached a route/upstream), `reqId`, `traceId`. `/metrics`
 histogram (`gateway_upstream_latency_ms`, per route only — never per raw URL, user, IP or upstream
 instance), circuit breaker state/failure-count/transition counters (per route+upstream — a small,
 static, config-bounded set, not per-request data) and rejection/dependency-error counters — all
-process-local, reset on restart.
+process-local, reset on restart. As of post-production Phase 5, the request's own `X-Request-Id`/
+`traceparent` are also sent on gateway's internal call to `ratelimit` for policy checks
+(`src/rate-limit-client.js`), so a `ratelimit` decision for this request is traceable back to it;
+no public gateway behaviour changed — see [OBSERVABILITY.md](../stack/docs/OBSERVABILITY.md).
 
 ## Backup / restore
 

@@ -13,13 +13,13 @@ const listen = (/** @type {import('node:http').Server} */ s) => new Promise((r) 
 const origin = (/** @type {import('node:http').Server} */ s) => { const a = /** @type {import('node:net').AddressInfo} */ (s.address()); return `http://127.0.0.1:${a.port}`; };
 
 const echo = createServer((req, res) => { if ((req.url ?? '').endsWith('/health')) return res.writeHead(200).end('ok'); res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ headers: req.headers })); });
-/** @type {{ policy: string, subject: string, cost: number, auth: string|undefined }[]} */ const checks = [];
+/** @type {{ policy: string, subject: string, cost: number, auth: string|undefined, headers: import('node:http').IncomingHttpHeaders }[]} */ const checks = [];
 let rlMode = 'allow';
 const ratelimit = createServer((req, res) => {
   let body = '';
   req.on('data', (c) => { body += c; });
   req.on('end', () => {
-    checks.push({ ...JSON.parse(body), auth: req.headers.authorization });
+    checks.push({ ...JSON.parse(body), auth: req.headers.authorization, headers: req.headers });
     if (rlMode === 'down') return res.writeHead(503).end('down');
     if (rlMode === 'missing') return res.writeHead(404).end('{"error":{"code":"POLICY_NOT_FOUND"}}');
     const deny = rlMode === 'deny' || rlMode === 'block';
@@ -72,6 +72,10 @@ test('policy: checks the ratelimit service per subject, sets RateLimit-* headers
   assert.equal(res.statusCode, 200, res.body);
   assert.deepEqual([checks[0].policy, checks[0].subject, checks[0].cost, checks[0].auth, res.headers['ratelimit-limit'], res.headers['ratelimit-remaining']], ['api', 'ip:203.0.113.7', 1, `Bearer ${'r'.repeat(40)}`, '100', '99']);
   assert.ok(Number(res.headers['ratelimit-reset']) <= 30);
+  // Post-production Phase 5: ratelimit is a fixed internal platform dependency — the same
+  // trace/request-id this gateway hop is using is attached to the check call too.
+  assert.equal(checks[0].headers['x-request-id'], res.headers['x-request-id']);
+  assert.equal(checks[0].headers.traceparent, res.headers.traceparent);
   rlMode = 'deny';
   res = await app.inject({ url: '/open/x', remoteAddress: '203.0.113.7' });
   assert.equal(res.statusCode, 429, res.body);

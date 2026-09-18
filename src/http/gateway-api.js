@@ -283,7 +283,7 @@ export class GatewayApi {
     if (route.policy && this.policies) {
       const subject = GatewayApi.#subject(route.policy.subject, request, extra['x-user-id']);
       try {
-        const d = await this.policies.check({ policy: route.policy.name, subject, cost: route.policy.cost });
+        const d = await this.policies.check({ policy: route.policy.name, subject, cost: route.policy.cost }, { 'x-request-id': request.id, traceparent: request.trace.toString() });
         reply.header('ratelimit-limit', String(d.limit));
         reply.header('ratelimit-remaining', String(d.remaining));
         reply.header('ratelimit-reset', String(Math.max(0, Math.ceil((Date.parse(d.resetAt) - Date.now()) / 1000))));

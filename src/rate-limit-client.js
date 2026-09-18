@@ -26,14 +26,18 @@ export class RateLimitClient {
 
   /**
    * @param {{ policy: string, subject: string, cost: number }} check
+   * @param {Record<string, string>} [headers] Extra headers for this one call — gateway's own
+   *   call site attaches its trace-propagation headers here (ratelimit is a fixed, trusted
+   *   internal platform dependency, unlike an operator-configured proxy target); never set
+   *   implicitly by this class itself.
    * @returns {Promise<Decision>}
    */
-  async check(check) {
+  async check(check, headers = {}) {
     let res;
     try {
       res = await this.fetch(`${this.url}/v1/check`, {
         method: 'POST',
-        headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json' },
+        headers: { authorization: `Bearer ${this.apiKey}`, 'content-type': 'application/json', ...headers },
         body: JSON.stringify(check),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
