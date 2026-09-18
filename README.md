@@ -125,6 +125,9 @@ See [.env.example](.env.example). Nothing is required except the environment var
 
 ## Upgrading
 
+For the general upgrade procedure (pull, `npm ci`, backup, restart, confirm readiness), see
+`stack/docs/UPGRADE.md`. This section covers gateway-specific concerns only.
+
 **Stage 9**: any existing `routes.json` with a `policy` block that doesn't already set `failOpen`
 now fails startup validation (`<route>.policy.failOpen is required when policy is set`) — there is
 no default any more, on purpose (see "Routes" above). Before upgrading, add an explicit
@@ -186,7 +189,9 @@ process-local, reset on restart.
 ## Backup / restore
 
 No database. The only state to keep under version control is `routes.json` itself; restoring means
-redeploying it and restarting.
+redeploying it and restarting. `stack backup`/`stack restore` from the workspace root (see
+`stack/docs/UPGRADE.md`) captures `routes.json` alongside the rest of the stack, for operators who
+prefer that over version control alone.
 
 See [docs/READINESS.md](docs/READINESS.md) for the full contract.
 
