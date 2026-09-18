@@ -1,0 +1,291 @@
+openapi: 3.1.0
+info:
+  title: gateway
+  version: "1.0.0"
+  description: >-
+    The single public entry point in front of the other atc-web services. It matches routes by
+    host and path prefix against a deployment-configured routes.json, then verifies end-user
+    access tokens, applies rate limits, CORS and security headers, and streams requests and
+    responses to the matched upstream. This document covers only gateway's own five endpoints
+    (health, readiness, info, metrics and the proxy dispatcher) — see x-gateway-proxy-note below
+    for how proxied traffic is documented.
+x-gateway-proxy-note: >-
+  Beyond the endpoints below, gateway reverse-proxies a deployment-configured set of routes read
+  from routes.json at startup (id, host, pathPrefix, stripPrefix, upstreams, methods, auth,
+  injectApiKey, cors, rateLimit, bodyLimit, timeoutMs, healthPath, policy, geo). That route set is
+  deployment configuration, not a fixed source-level contract — the actual proxied paths and
+  methods differ per environment and are not enumerated as OpenAPI paths in this document. Each
+  proxied route's own request/response contract lives in the target service's own openapi.yaml.
+paths:
+  /health:
+    get:
+      operationId: gateway.health.check
+      summary: Liveness check
+      description: Always returns 200 once the process is accepting connections. No dependency checks.
+      x-stack-visibility: public
+      security: []
+      responses:
+        '200':
+          description: Process is up.
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/XContentTypeOptions'
+            Referrer-Policy:
+              $ref: '#/components/headers/ReferrerPolicy'
+            Server:
+              $ref: '#/components/headers/Server'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /ready:
+    get:
+      operationId: gateway.ready.check
+      summary: Readiness check
+      description: >-
+        Polls every configured route's upstream(s) on their healthPath (2s timeout each, result
+        cached 15s) and reports per-route healthy/total counts. 200 when every route has at least
+        one healthy upstream, 503 otherwise.
+      x-stack-visibility: public
+      security: []
+      responses:
+        '200':
+          description: Every route has at least one upstream answering its health path.
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/XContentTypeOptions'
+            Referrer-Policy:
+              $ref: '#/components/headers/ReferrerPolicy'
+            Server:
+              $ref: '#/components/headers/Server'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        '503':
+          description: At least one route has zero healthy upstreams.
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/XContentTypeOptions'
+            Referrer-Policy:
+              $ref: '#/components/headers/ReferrerPolicy'
+            Server:
+              $ref: '#/components/headers/Server'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+  /v1/info:
+    get:
+      operationId: gateway.info.get
+      summary: Service identity and capabilities
+      description: Static identity, capability list and the currently-loaded routes.json revision.
+      x-stack-visibility: public
+      security: []
+      responses:
+        '200':
+          description: Identity and capability information.
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/XContentTypeOptions'
+            Referrer-Policy:
+              $ref: '#/components/headers/ReferrerPolicy'
+            Server:
+              $ref: '#/components/headers/Server'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InfoResponse'
+  /metrics:
+    get:
+      operationId: gateway.metrics.get
+      summary: Prometheus metrics
+      description: >-
+        Prometheus text exposition format: requests by route and status class, request and
+        upstream latency histograms, byte counters, upstream errors, gateway-level rejection
+        counters, circuit breaker state/failures/transitions per route and upstream, process
+        uptime. The endpoint only exists when METRICS_TOKEN is configured — when it is not set,
+        every request (regardless of credentials) gets 404, not 401.
+      x-stack-visibility: operational
+      security:
+        - MetricsToken: []
+      responses:
+        '200':
+          description: Metrics rendered as Prometheus text.
+          headers:
+            X-Content-Type-Options:
+              $ref: '#/components/headers/XContentTypeOptions'
+            Referrer-Policy:
+              $ref: '#/components/headers/ReferrerPolicy'
+            Server:
+              $ref: '#/components/headers/Server'
+            Strict-Transport-Security:
+              $ref: '#/components/headers/StrictTransportSecurity'
+          content:
+            text/plain; version=0.0.4; charset=utf-8:
+              schema:
+                type: string
+                description: Prometheus text exposition format.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    MetricsToken:
+      type: http
+      scheme: bearer
+      description: >-
+        Authorization: Bearer <METRICS_TOKEN>. A single shared-secret token from the METRICS_TOKEN
+        environment variable, compared to the presented value in constant time (SHA-256 digest
+        equality), not a JWT. Metrics are entirely disabled (404, regardless of credentials) when
+        METRICS_TOKEN is unset.
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              anyOf:
+                - type: object
+                - type: array
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+    ReadyResponse:
+      type: object
+      required: [status, upstreams]
+      properties:
+        status:
+          type: string
+          enum: [ok, unavailable]
+        upstreams:
+          type: object
+          description: >-
+            Per-route healthy/total upstream counts, keyed by the route id from routes.json (the
+            key set is deployment-specific).
+          additionalProperties:
+            type: string
+            pattern: '^\d+/\d+$'
+            example: "1/2"
+    InfoResponse:
+      type: object
+      required: [service, version, apiVersion, capabilities, schemaVersion, serviceCore, routesRevision]
+      properties:
+        service:
+          type: string
+          const: gateway
+        version:
+          type: string
+          description: gateway's own package.json version.
+        apiVersion:
+          type: string
+          const: v1
+        capabilities:
+          type: array
+          description: >-
+            Static list of features gateway code supports. Does not reflect whether the
+            rate-limit-policy or geo integrations are actually configured (wired) for this
+            deployment — that depends on routes.json and the RATELIMIT_/GEO_ environment variables.
+          items:
+            type: string
+          example: [jwt-auth, rate-limit-policy, upstream-health-tracking, geo-headers, cors, trace-propagation]
+        schemaVersion:
+          type: "null"
+          description: Always null — gateway has no database and no versioned schema.
+        serviceCore:
+          type: "null"
+          description: Always null — gateway is the one service with no @atc-web/service-core dependency.
+        routesRevision:
+          type: ["string", "null"]
+          description: >-
+            File mtime + content hash of the currently-loaded routes.json, changing only on a
+            successful SIGHUP reload; null until the first reload, if the process was never sent
+            one.
+  responses:
+    Unauthorized:
+      description: Bearer token missing or does not match METRICS_TOKEN.
+      headers:
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
+        X-Content-Type-Options:
+          $ref: '#/components/headers/XContentTypeOptions'
+        Referrer-Policy:
+          $ref: '#/components/headers/ReferrerPolicy'
+        Server:
+          $ref: '#/components/headers/Server'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: invalid metrics token
+    NotFound:
+      description: Metrics are disabled because METRICS_TOKEN is not configured.
+      headers:
+        X-Content-Type-Options:
+          $ref: '#/components/headers/XContentTypeOptions'
+        Referrer-Policy:
+          $ref: '#/components/headers/ReferrerPolicy'
+        Server:
+          $ref: '#/components/headers/Server'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              code: NOT_FOUND
+              message: metrics disabled
+  headers:
+    XContentTypeOptions:
+      description: Always set by gateway's response hook unless already set by the handler.
+      schema:
+        type: string
+        const: nosniff
+    ReferrerPolicy:
+      description: Always set by gateway's response hook unless already set by the handler.
+      schema:
+        type: string
+        const: strict-origin-when-cross-origin
+    Server:
+      description: gateway's configured SERVER_NAME (default atc-gateway).
+      schema:
+        type: string
+        example: atc-gateway
+    StrictTransportSecurity:
+      description: Present only when the gateway process has TLS configured (HSTS_MAX_AGE > 0).
+      schema:
+        type: string
+        example: "max-age=31536000; includeSubDomains"
+    WWWAuthenticate:
+      description: Present on 401 responses to /metrics.
+      schema:
+        type: string
+        const: Bearer
