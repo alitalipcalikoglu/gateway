@@ -17,6 +17,19 @@ x-gateway-proxy-note: >-
   methods differ per environment and are not enumerated as OpenAPI paths in this document. Each
   proxied route's own request/response contract lives in the target service's own openapi.yaml.
 paths:
+  /openapi.yaml:
+    get:
+      operationId: gateway.openapi
+      summary: Download the canonical OpenAPI document
+      description: Returns this service's repository-root OpenAPI 3.1 document byte-for-byte.
+      security: []
+      responses:
+        "200":
+          description: Canonical OpenAPI document.
+          content:
+            text/yaml:
+              schema: { type: string }
+
   /health:
     get:
       operationId: gateway.health.check

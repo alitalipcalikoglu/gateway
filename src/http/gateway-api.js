@@ -22,6 +22,7 @@ import { UpstreamPool } from '../upstream-pool.js';
 // way service-core's own `readServiceVersion` would, just inlined; `serviceCore` is `null` since
 // there genuinely is no such dependency to report a version for.
 const GATEWAY_VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+const OPENAPI_DOCUMENT = readFileSync(new URL('../../openapi.yaml', import.meta.url));
 
 /**
  * The edge: matches a route, enforces rate limit, CORS, method and authentication, then hands
@@ -29,7 +30,7 @@ const GATEWAY_VERSION = JSON.parse(readFileSync(new URL('../../package.json', im
  */
 export class GatewayApi {
   static READY_CACHE_MS = 15_000;
-  static RESERVED = new Set(['/health', '/ready', '/metrics', '/v1/info']);
+  static RESERVED = new Set(['/health', '/ready', '/metrics', '/openapi.yaml', '/v1/info']);
 
   /**
    * @param {object} deps
@@ -129,6 +130,10 @@ export class GatewayApi {
     this.#warnFailOpenIp(app.log);
 
     app.get('/health', async () => ({ status: 'ok' }));
+    app.get('/openapi.yaml', { logLevel: 'warn' }, async (_request, reply) => {
+      reply.type('text/yaml; charset=utf-8');
+      return reply.send(OPENAPI_DOCUMENT);
+    });
     app.get('/ready', async (_request, reply) => {
       const ready = await this.#readiness();
       return reply.code(ready.ok ? 200 : 503).send({ status: ready.ok ? 'ok' : 'unavailable', upstreams: ready.detail });

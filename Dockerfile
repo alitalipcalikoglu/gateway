@@ -9,6 +9,7 @@ ENV NODE_ENV=production PORT=3000 ROUTES_FILE=/config/routes.json
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
+COPY openapi.yaml ./
 COPY src ./src
 USER node
 VOLUME ["/config"]

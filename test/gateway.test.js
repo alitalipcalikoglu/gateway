@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { after, before, test } from 'node:test';
 import { exportJWK, importPKCS8, SignJWT } from 'jose';
 import { GatewayApi } from '../src/http/gateway-api.js';
@@ -68,6 +69,14 @@ after(async () => {
   await app.close();
   api.destroy();
   for (const s of [echo, flaky, jwks]) s.close();
+});
+
+test('canonical OpenAPI document is public, reserved and served byte-for-byte', async () => {
+  const spec = await app.inject({ url: '/openapi.yaml' });
+  assert.equal(spec.statusCode, 200);
+  assert.equal(spec.body, readFileSync(new URL('../openapi.yaml', import.meta.url), 'utf8'));
+  assert.match(String(spec.headers['content-type']), /^text\/yaml/);
+  assert.equal(GatewayApi.RESERVED.has('/openapi.yaml'), true);
 });
 
 test('routes by prefix and host, rewrites the path, forwards standard headers, hides internals', async () => {
