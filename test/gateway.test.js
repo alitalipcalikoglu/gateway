@@ -233,7 +233,7 @@ test('/v1/info reports identity, capabilities and null schemaVersion/serviceCore
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.json(), {
     service: 'gateway',
-    version: '1.0.0',
+    version: '1.1.0',
     apiVersion: 'v1',
     capabilities: ['jwt-auth', 'rate-limit-policy', 'upstream-health-tracking', 'geo-headers', 'cors', 'trace-propagation'],
     schemaVersion: null,

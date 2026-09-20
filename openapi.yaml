@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: gateway
-  version: "1.0.0"
+  version: "1.1.0"
   description: >-
     The single public entry point in front of the other atc-web services. It matches routes by
     host and path prefix against a deployment-configured routes.json, then verifies end-user
