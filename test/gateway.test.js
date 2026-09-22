@@ -9,6 +9,8 @@ import { JwtVerifier } from '../src/jwt-verifier.js';
 import { RouteTable } from '../src/route-table.js';
 import { routesDoc, routesEnv, SECRET, silentLog, testConfig } from './helpers.js';
 
+const PACKAGE_VERSION = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+
 /** @param {import('node:http').Server} s */
 const origin = (s) => `http://127.0.0.1:${/** @type {import('node:net').AddressInfo} */ (s.address()).port}`;
 /** @param {import('node:http').Server} s */
@@ -233,7 +235,7 @@ test('/v1/info reports identity, capabilities and null schemaVersion/serviceCore
   assert.equal(res.statusCode, 200);
   assert.deepEqual(res.json(), {
     service: 'gateway',
-    version: '1.1.0',
+    version: PACKAGE_VERSION,
     apiVersion: 'v1',
     capabilities: ['jwt-auth', 'rate-limit-policy', 'upstream-health-tracking', 'geo-headers', 'cors', 'trace-propagation'],
     schemaVersion: null,
